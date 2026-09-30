@@ -1,0 +1,16 @@
+[project]
+name = "shopledger"
+version = "1.8.0"
+description = "Offline SQLite invoicing backend extracted from a production auto-shop desktop app"
+requires-python = ">=3.11"
+dependencies = ["reportlab>=4.2"]
+license = { text = "MIT" }
+authors = [{ name = "George Khalil" }]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+    # reportlab 4.2 still touches ast.NameConstant; not ours to fix.
+    "ignore:ast.NameConstant is deprecated:DeprecationWarning",
+]

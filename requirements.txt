@@ -1,0 +1,5 @@
+# Runtime — PDF receipts. Without it printing falls back to an HTML receipt.
+reportlab==4.2.5
+
+# Tests
+pytest>=8

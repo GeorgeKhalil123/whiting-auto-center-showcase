@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local databases, backups, and demo output — real shop data never lives here.
+*.db
+*.db-wal
+*.db-shm
+backups/
+sample_invoice.pdf
+ShopLedger-Invoice-*
+
+# macOS
+.DS_Store
