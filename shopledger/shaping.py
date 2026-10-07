@@ -35,7 +35,9 @@ def _vehicle_dict(row: sqlite3.Row) -> dict:
 def vehicle_title(row: sqlite3.Row | None) -> str:
     if not row:
         return "—"
-    return f"{row['year']} {row['make']} {row['model']}".strip()
+    # Older rows can have a NULL year; never print it as "None".
+    parts = (row["year"], row["make"], row["model"])
+    return " ".join(str(p) for p in parts if p not in (None, "")) or "—"
 
 
 def _mechanic_dict(row: sqlite3.Row) -> dict:

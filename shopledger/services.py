@@ -188,8 +188,8 @@ def update_vehicle(conn: sqlite3.Connection, vid: str, data: dict) -> dict:
     for key in ("make", "model", "plate", "vin"):
         if key in data:
             fields[key] = _text(data[key], key) or ("—" if key in ("plate", "vin") else "")
-    if "year" in data:
-        fields["year"] = _to_year(data.get("year"))
+    if "year" in data and (year := _to_year(data.get("year"))) is not None:
+        fields["year"] = year   # a cleared year field keeps the old year
     if "mileage" in data:
         fields["mileage"] = _to_mileage(data.get("mileage"))
     repo.update_vehicle(conn, vid, fields)

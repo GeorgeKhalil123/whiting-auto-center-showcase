@@ -108,7 +108,7 @@ the bundled pythonnet DLLs, which the build machine never showed.
 | Production test suite | 50 test functions in `tests/test_backend.py` |
 | Schema migrations | v2 → v6, `SCHEMA_VERSION = 6` |
 | Backups retained | last 10 |
-| This extract | 94 test functions (205 cases with parametrization): the 50 ported + 44 new (v1 migration, `Api` transaction/lock/backup/printing, draft-line merge, rate round-trips, input validation, search escaping, demo output) |
+| This extract | 95 test functions (206 cases with parametrization): the 50 ported + 45 new (v1 migration, `Api` transaction/lock/backup/printing, draft-line merge, rate round-trips, input validation, search escaping, demo output) |
 
 ## Sample output
 
@@ -148,7 +148,7 @@ source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 python -m shopledger.demo            # temp DB, invoice, forced rollback, sample_invoice.pdf
-python -m pytest -q                  # 205 tests
+python -m pytest -q                  # 206 tests
 ```
 
 The demo prints something like:

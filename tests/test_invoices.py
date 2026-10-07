@@ -356,3 +356,13 @@ def test_vehicle_year_range_and_blank_default(conn):
     assert blank["year"] == date.today().year
     with pytest.raises(services.ValidationError):
         services.add_vehicle(conn, cid, {"make": "A", "model": "B", "year": nxt + 1})
+
+
+def test_clearing_the_year_keeps_it_and_titles_skip_a_null_year(conn):
+    # The edit form sends year: f.year || '' when the field is cleared.
+    cid, vid = customer_with_vehicle(conn)
+    assert services.update_vehicle(conn, vid, {"year": ""})["year"] == 2017
+    no = an_invoice(conn, vehicle_id=vid, customer_id=cid)
+    assert services.get_invoice(conn, no)["vehicle"] == "2017 Toyota Camry"
+    conn.execute("UPDATE vehicles SET year = NULL WHERE id = ?", (vid,))  # an older row
+    assert services.get_invoice(conn, no)["vehicle"] == "Toyota Camry"
