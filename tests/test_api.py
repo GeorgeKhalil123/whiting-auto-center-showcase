@@ -94,7 +94,7 @@ def test_backup_copies_the_live_db_and_prunes(tmp_path, conn):
 def test_print_invoice_writes_a_pdf(tmp_path, conn):
     api = Api(conn)
     cid = _new_customer(api)
-    no = api.save_invoice({"customer_id": cid, "cc_fee_rate": 3, "items": [
+    no = api.save_invoice({"customer_id": cid, "cc_fee_rate": 0.03, "items": [
         {"name": "Brake Pad Set", "qty": 1, "price": 70, "type": "part"}]})["no"]
     res = api.print_invoice(no, dest=str(tmp_path / "receipt.pdf"), open_file=False)
     assert res["ok"], res
@@ -159,4 +159,41 @@ def test_demo_reports_an_unwritable_output_and_still_finishes(tmp_path, capsys):
     blocker.write_text("not a folder")
     assert demo.main(["--out", str(blocker / "x.pdf")]) == 1
     printed = capsys.readouterr().out
-    assert "receipt       FAILED:" in printed and "backup" in printed
+    assert "receipt       FAILED: Can't write receipt to" in printed and "backup" in printed
+
+
+@pytest.mark.parametrize("data", ["abc", 5, 1.5, True, ["x"]])
+def test_non_object_data_is_invalid_not_unexpected(conn, data):
+    api = Api(conn)
+    cid = _new_customer(api)
+    writes = [api.create_customer, api.create_mechanic, api.create_catalog_item,
+              api.save_invoice, lambda d: api.add_vehicle(cid, d),
+              lambda d: api.update_customer(cid, d)]
+    for write in writes:
+        assert write(data) == {"ok": False, "error": "Invalid data."}
+
+
+@pytest.mark.parametrize("dest", [123, ["x"]])
+def test_print_rejects_a_dest_that_is_not_a_path(conn, dest):
+    api = Api(conn)
+    no = api.save_invoice({"customer_id": _new_customer(api), "items": [
+        {"name": "Part", "qty": 1, "price": 1, "type": "part"}]})["no"]
+    assert api.print_invoice(no, dest=dest, open_file=False) == {
+        "ok": False, "error": "Receipt path must be a file path."}
+
+
+def test_print_to_an_unwritable_path_says_so(tmp_path, conn):
+    api = Api(conn)
+    no = api.save_invoice({"customer_id": _new_customer(api), "items": [
+        {"name": "Part", "qty": 1, "price": 1, "type": "part"}]})["no"]
+    blocker = tmp_path / "file"
+    blocker.write_text("not a folder")
+    res = api.print_invoice(no, dest=str(blocker / "x.pdf"), open_file=False)
+    assert res["ok"] is False
+    assert res["error"].startswith("Can't write receipt to ") and "Unexpected" not in res["error"]
+
+
+def test_demo_says_when_it_changes_the_extension(tmp_path, capsys):
+    assert demo.main(["--out", str(tmp_path / "x.txt")]) == 0
+    assert (tmp_path / "x.pdf").exists() and not (tmp_path / "x.txt").exists()
+    assert "receipts are PDFs; writing x.pdf" in capsys.readouterr().out

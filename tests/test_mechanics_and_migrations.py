@@ -168,8 +168,8 @@ def test_v5_database_open_invoices_track_the_live_rate_after_migrating(db_file):
     assert db_module.get_setting(c, "schema_version") == str(db_module.SCHEMA_VERSION)
 
     # Shop raises the default tax rate and turns the card fee on post-upgrade.
-    services.set_default_tax_rate(c, 8)
-    services.set_default_cc_fee(c, 4, True)
+    services.set_default_tax_rate(c, 0.08)
+    services.set_default_cc_fee(c, 0.04, True)
 
     # The completed invoice is a finished sale — untouched.
     done = services.get_invoice(c, 900)
@@ -230,7 +230,7 @@ def test_v1_database_walks_every_migration_without_losing_data(db_file):
     assert services.get_invoice(c, 900)["mechanicId"] == roster[0]["id"]
 
     # v4-v6: completed invoice frozen at the old default, open one tracks live.
-    services.set_default_tax_rate(c, 7)
+    services.set_default_tax_rate(c, 0.07)
     assert services.get_invoice(c, 900)["tax"] == 2.39    # 36 * 0.06625 = 2.385
     assert services.get_invoice(c, 901)["taxRate"] == 0.07
     assert services.get_invoice(c, 900)["ccFee"] == 0.0

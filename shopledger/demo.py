@@ -35,7 +35,7 @@ def _snapshot(conn: sqlite3.Connection) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", default="sample_invoice.pdf",
-                        help="where to write the rendered receipt")
+                        help="where to write the rendered receipt (always a .pdf)")
     args = parser.parse_args(argv)
 
     with tempfile.TemporaryDirectory(prefix="shopledger-") as tmp:
@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
                                            "mileage": 84210})
         saved = api.save_invoice({
             "customer_id": cust["id"], "vehicle_id": veh["id"], "mileage": 84210,
-            "status": "completed", "cc_fee_rate": 3,
+            "status": "completed", "cc_fee_rate": 0.03,
             "comments": "Rear pads at 4mm - recheck at next oil change.",
             "items": [
                 {"name": "Oil & Filter Change", "qty": 1, "price": 40, "type": "labor"},
@@ -89,6 +89,9 @@ def main(argv: list[str] | None = None) -> int:
               f"card fee ${inv['ccFee']:.2f}  total ${inv['total']:.2f}")
 
         out = Path(args.out).resolve()
+        if out.suffix.lower() != ".pdf":
+            out = out.with_suffix(".pdf")
+            print(f"note          receipts are PDFs; writing {out.name}")
         try:
             out.parent.mkdir(parents=True, exist_ok=True)
         except OSError:

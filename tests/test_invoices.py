@@ -210,7 +210,7 @@ def test_readding_a_line_on_a_resumed_invoice_bumps_qty(conn):
 
 
 @pytest.mark.parametrize("qty", [1.5, "2.5", 0, "0", -3, "-3", "abc", "NaN", "Infinity",
-                                 True, 10**30, 10_000])
+                                 True, 10**30, 10_000, "1e3", "+5", "1_000", "١٢", "３", []])
 def test_bad_quantities_are_rejected_not_rounded(conn, qty):
     # 1.5 h of labor at $80 used to save as qty 1 / $80; 10**30 crashed SQLite.
     cid, _ = customer_with_vehicle(conn)
@@ -258,3 +258,77 @@ def test_money_totals_are_summed_as_decimal(conn):
     assert month["total"] == 1.0 and isinstance(month["total"], float)
     revenue = services.dashboard_summary(conn)["revenue_today"]
     assert revenue == 1.0 and isinstance(revenue, float)
+
+
+@pytest.mark.parametrize("price", [10**30, "1e16", 1_000_000])
+def test_absurd_prices_are_rejected(conn, price):
+    # 10**30 overflowed the cents quantize; 1e16 lost precision as a float.
+    with pytest.raises(services.ValidationError, match="Price looks too high"):
+        services.create_catalog_item(conn, {"name": "X", "type": "part", "price": price})
+    assert services._to_price("999999.99") == 999999.99
+
+
+@pytest.mark.parametrize("vid", ["abc", -1, 1.5, True, "1e3", float("inf"), "NaN", 10**30, [], {}])
+def test_save_rejects_a_vehicle_that_does_not_exist(conn, vid):
+    cid, _ = customer_with_vehicle(conn)
+    with pytest.raises(services.ValidationError, match="Vehicle not found"):
+        services.save_invoice(conn, {"customer_id": cid, "vehicle_id": vid, "items": [
+            {"name": "Part", "qty": 1, "price": 1, "type": "part"}]})
+
+
+def test_save_rejects_another_customers_vehicle(conn):
+    _, other_vid = customer_with_vehicle(conn, "John Sample")
+    with pytest.raises(services.ValidationError, match="Vehicle not found"):
+        an_invoice(conn, vehicle_id=other_vid)
+
+
+@pytest.mark.parametrize("miles", [10**30, -5, 1.5, "abc", float("nan"), True])
+def test_bad_mileage_is_rejected(conn, miles):
+    with pytest.raises(services.ValidationError, match="Mileage"):
+        an_invoice(conn, mileage=miles)
+    assert services.get_invoice(conn, an_invoice(conn, mileage="84,210"))["mileage"] == 84210
+
+
+@pytest.mark.parametrize("bad_id", [[], {}, object(), 10**30, 5, None, True, ""])
+def test_malformed_ids_are_not_found(conn, bad_id):
+    calls = [
+        (services.get_customer, "Customer"), (services.delete_customer, "Customer"),
+        (lambda c, i: services.update_customer(c, i, {}), "Customer"),
+        (lambda c, i: services.add_vehicle(c, i, {"make": "A", "model": "B"}), "Customer"),
+        (lambda c, i: services.update_vehicle(c, i, {}), "Vehicle"),
+        (lambda c, i: services.update_mechanic(c, i, {}), "Mechanic"),
+        (services.delete_mechanic, "Mechanic"), (services.set_active_mechanic, "Mechanic"),
+        (lambda c, i: services.update_catalog_item(c, i, {}), "Catalog item"),
+        (services.delete_catalog_item, "Catalog item"),
+    ]
+    for call, what in calls:
+        with pytest.raises(services.ValidationError, match=f"{what} not found"):
+            call(conn, bad_id)
+    cid, _ = customer_with_vehicle(conn)
+    if bad_id not in (None, ""):   # those mean "use the active mechanic"
+        with pytest.raises(services.ValidationError, match="Mechanic not found"):
+            an_invoice(conn, mechanic_id=bad_id)
+
+
+def test_numbers_are_accepted_as_text_but_lists_are_not(conn):
+    cust = services.create_customer(conn, {"name": 42, "phone": 5550100})
+    assert (cust["name"], cust["phone"]) == ("42", "5550100")
+    assert [c["name"] for c in services.list_customers(conn, 42)] == ["42"]
+    assert services.list_history(conn, 1000) == []
+    for field in ("name", "phone", "notes"):
+        with pytest.raises(services.ValidationError, match="must be text"):
+            services.create_customer(conn, {"name": "Ok", field: ["x"]})
+    with pytest.raises(services.ValidationError, match="must be text"):
+        an_invoice(conn, comments={"a": 1})
+    with pytest.raises(services.ValidationError, match="must be text"):
+        services.add_vehicle(conn, cust["id"], {"make": True, "model": "B"})
+    with pytest.raises(services.ValidationError, match="must be text"):
+        services.list_customers(conn, ["x"])
+
+
+@pytest.mark.parametrize("items, msg", [
+    ("abc", "must be a list"), ({"name": "A"}, "must be a list"), (5, "must be a list"),
+    ([None], "needs a name"), (["x"], "needs a name"), ([{"name": None}], "needs a name")])
+def test_malformed_line_items_are_rejected(conn, items, msg):
+    with pytest.raises(services.ValidationError, match=msg):
+        an_invoice(conn, items=items)

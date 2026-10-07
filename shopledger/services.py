@@ -3,8 +3,9 @@
 Everything the API returns is JSON-serializable and money is pre-rounded to
 cents. Writes happen inside a single transaction managed by the caller (api.py).
 
-Rates/validation (rules.py), row shaping (shaping.py) and the mechanic roster
-(roster.py) are re-exported here so callers only ever import `services`.
+Rates/validation (rules.py), row shaping (shaping.py), the mechanic roster
+(roster.py) and the catalog (catalog.py) are re-exported here so callers only
+ever import `services`.
 """
 from __future__ import annotations
 
@@ -22,7 +23,10 @@ from .rules import (DEFAULT_CC_FEE_RATE, DEFAULT_TAX_RATE, MAX_CC_FEE_RATE,  # n
                     format_tax_rate, invoice_cc_fee_rate, invoice_tax_rate,
                     normalize_cc_fee_rate, normalize_tax_rate, set_default_cc_fee,
                     set_default_tax_rate, tax_labor, tax_rate, today,
-                    _month_label, _require_type, _to_int, _to_invoice_no, _to_price, _to_qty)
+                    _given, _month_label, _require_type, _text, _to_id, _to_int,
+                    _to_invoice_no, _to_mileage, _to_price, _to_qty)
+from .catalog import (create_catalog_item, delete_catalog_item,  # noqa: F401
+                      list_catalog, list_categories, update_catalog_item)
 from .shaping import (_catalog_dict, _customer_dict, _invoice_summary,  # noqa: F401
                       _item_dict, _serviced_by, _vehicle_dict, vehicle_title)
 
@@ -84,11 +88,11 @@ def bootstrap(conn: sqlite3.Connection) -> dict:
 # ---- customers & vehicles ----------------------------------------------------
 
 def list_customers(conn: sqlite3.Connection, search: str | None = None) -> list[dict]:
-    return [_customer_dict(r) for r in repo.list_customers(conn, search)]
+    return [_customer_dict(r) for r in repo.list_customers(conn, _text(search, "Search"))]
 
 
 def get_customer(conn: sqlite3.Connection, cid: str) -> dict:
-    row = repo.get_customer(conn, cid)
+    row = repo.get_customer(conn, cid := _to_id(cid, "Customer"))
     if not row:
         raise ValidationError("Customer not found.")
     vehicles = [_vehicle_dict(v) for v in repo.list_vehicles(conn, cid)]
@@ -102,30 +106,30 @@ def get_customer(conn: sqlite3.Connection, cid: str) -> dict:
 
 
 def create_customer(conn: sqlite3.Connection, data: dict) -> dict:
-    name = (data.get("name") or "").strip()
+    name = _text(data.get("name"), "Customer name")
     if not name:
         raise ValidationError("Customer name is required.")
-    phone = (data.get("phone") or "").strip() or "—"
-    notes = (data.get("notes") or "").strip()
-    since = (data.get("since") or str(date.today().year)).strip()
+    phone = _text(data.get("phone"), "Phone") or "—"
+    notes = _text(data.get("notes"), "Notes")
+    since = _text(data.get("since"), "Customer since") or str(date.today().year)
     cid = repo.create_customer(conn, name, phone, since, notes)
     return _customer_dict(repo.get_customer(conn, cid))
 
 
 def update_customer(conn: sqlite3.Connection, cid: str, data: dict) -> dict:
-    if not repo.get_customer(conn, cid):
+    if not repo.get_customer(conn, cid := _to_id(cid, "Customer")):
         raise ValidationError("Customer not found.")
     fields: dict = {}
     if "name" in data:
-        if not (data["name"] or "").strip():
+        if not (name := _text(data["name"], "Customer name")):
             raise ValidationError("Customer name is required.")
-        fields["name"] = data["name"].strip()
+        fields["name"] = name
     if "phone" in data:
-        fields["phone"] = (data["phone"] or "").strip() or "—"
+        fields["phone"] = _text(data["phone"], "Phone") or "—"
     if "notes" in data:
-        fields["notes"] = (data["notes"] or "").strip()
+        fields["notes"] = _text(data["notes"], "Notes")
     if "since" in data:
-        fields["since"] = (data["since"] or "").strip()
+        fields["since"] = _text(data["since"], "Customer since")
     repo.update_customer(conn, cid, fields)
     return _customer_dict(repo.get_customer(conn, cid))
 
@@ -140,7 +144,7 @@ def delete_customer(conn: sqlite3.Connection, cid: str) -> dict:
     - If they have no invoices at all, the customer (and vehicles) are deleted
       outright.
     """
-    if not repo.get_customer(conn, cid):
+    if not repo.get_customer(conn, cid := _to_id(cid, "Customer")):
         raise ValidationError("Customer not found.")
     invoices = repo.list_invoices_by_customer(conn, cid)
     open_count = sum(1 for i in invoices if i["status"] == "open")
@@ -158,88 +162,37 @@ def delete_customer(conn: sqlite3.Connection, cid: str) -> dict:
 
 
 def add_vehicle(conn: sqlite3.Connection, customer_id: str, data: dict) -> dict:
-    if not repo.get_customer(conn, customer_id):
+    if not repo.get_customer(conn, customer_id := _to_id(customer_id, "Customer")):
         raise ValidationError("Customer not found.")
-    make = (data.get("make") or "").strip()
-    model = (data.get("model") or "").strip()
+    make = _text(data.get("make"), "Make")
+    model = _text(data.get("model"), "Model")
     if not make or not model:
         raise ValidationError("Vehicle make and model are required.")
     f = {
         "year": _to_int(data.get("year")) or date.today().year,
         "make": make,
         "model": model,
-        "plate": (data.get("plate") or "").strip() or "—",
-        "vin": (data.get("vin") or "").strip() or "—",
-        "mileage": _to_int(data.get("mileage")),
+        "plate": _text(data.get("plate"), "Plate") or "—",
+        "vin": _text(data.get("vin"), "VIN") or "—",
+        "mileage": _to_mileage(data.get("mileage")),
     }
     vid = repo.create_vehicle(conn, customer_id, f)
     return _vehicle_dict(repo.get_vehicle(conn, vid))
 
 
 def update_vehicle(conn: sqlite3.Connection, vid: str, data: dict) -> dict:
-    if not repo.get_vehicle(conn, vid):
+    if not repo.get_vehicle(conn, vid := _to_id(vid, "Vehicle")):
         raise ValidationError("Vehicle not found.")
     fields: dict = {}
     for key in ("make", "model", "plate", "vin"):
         if key in data:
-            fields[key] = (data[key] or "").strip() or ("—" if key in ("plate", "vin") else "")
+            fields[key] = _text(data[key], key) or ("—" if key in ("plate", "vin") else "")
     if "year" in data:
         fields["year"] = _to_int(data.get("year"))
     if "mileage" in data:
-        fields["mileage"] = _to_int(data.get("mileage"))
+        fields["mileage"] = _to_mileage(data.get("mileage"))
     repo.update_vehicle(conn, vid, fields)
     return _vehicle_dict(repo.get_vehicle(conn, vid))
-
-
-def list_catalog(conn: sqlite3.Connection, type_: str, search: str | None = None,
-                 category: str | None = None) -> list[dict]:
-    _require_type(type_)
-    return [_catalog_dict(r) for r in repo.list_catalog(conn, type_, search, category)]
-
-
-def list_categories(conn: sqlite3.Connection, type_: str) -> list[str]:
-    _require_type(type_)
-    return repo.list_categories(conn, type_)
-
-def create_catalog_item(conn: sqlite3.Connection, data: dict) -> dict:
-    type_ = data.get("type")
-    _require_type(type_)
-    name = (data.get("name") or "").strip()
-    if not name:
-        raise ValidationError("Item name is required.")
-    category = (data.get("category") or "").strip() or "General"
-    desc = (data.get("desc") or "").strip()
-    price = _to_price(data.get("price"))
-    cid = repo.create_catalog_item(conn, type_, name, price, category, desc)
-    return _catalog_dict(repo.get_catalog_item(conn, cid))
-
-
-def update_catalog_item(conn: sqlite3.Connection, cid: str, data: dict) -> dict:
-    if not repo.get_catalog_item(conn, cid):
-        raise ValidationError("Catalog item not found.")
-    fields: dict = {}
-    if "type" in data:
-        _require_type(data["type"])
-        fields["type"] = data["type"]
-    if "name" in data:
-        if not (data["name"] or "").strip():
-            raise ValidationError("Item name is required.")
-        fields["name"] = data["name"].strip()
-    if "price" in data:
-        fields["price"] = _to_price(data["price"])
-    if "category" in data:
-        fields["category"] = (data["category"] or "").strip() or "General"
-    if "desc" in data:
-        fields["desc"] = (data["desc"] or "").strip()
-    repo.update_catalog_item(conn, cid, fields)
-    return _catalog_dict(repo.get_catalog_item(conn, cid))
-
-
-def delete_catalog_item(conn: sqlite3.Connection, cid: str) -> dict:
-    if not repo.get_catalog_item(conn, cid):
-        raise ValidationError("Catalog item not found.")
-    repo.delete_catalog_item(conn, cid)
-    return {"ok": True}
 
 
 # ---- invoices ----------------------------------------------------------------
@@ -257,9 +210,13 @@ def _next_invoice_no(conn: sqlite3.Connection) -> int:
 
 
 def _normalize_items(raw: list[dict], labor_taxed: bool = False) -> list[dict]:
+    if not isinstance(raw, (list, tuple)):
+        raise ValidationError("Line items must be a list.")
     items: list[dict] = []
-    for it in raw or []:
-        name = (it.get("name") or "").strip()
+    for it in raw:
+        if not isinstance(it, dict):
+            raise ValidationError("Every line item needs a name, qty, price and type.")
+        name = _text(it.get("name"), "Item name")
         if not name:
             raise ValidationError("Every line item needs a name.")
         type_ = it.get("type")
@@ -284,7 +241,7 @@ def save_invoice(conn: sqlite3.Connection, data: dict) -> dict:
     customer_id = data.get("customer_id") or data.get("customerId")
     if not customer_id:
         raise ValidationError("Select a customer before saving.")
-    if not repo.get_customer(conn, customer_id):
+    if not repo.get_customer(conn, customer_id := _to_id(customer_id, "Customer")):
         raise ValidationError("Customer not found.")
 
     raw_labor = data.get("tax_labor", data.get("taxLabor"))
@@ -297,9 +254,13 @@ def save_invoice(conn: sqlite3.Connection, data: dict) -> dict:
     if status not in ("open", "completed"):
         raise ValidationError("Status must be 'open' or 'completed'.")
 
-    vehicle_id = data.get("vehicle_id") or data.get("vehicleId")
-    mileage = _to_int(data.get("mileage"))
-    comments = (data.get("comments") or "").strip()
+    vehicle_id = _given(data, "vehicle_id", "vehicleId")
+    if vehicle_id is not None:   # must exist and be this customer's car
+        veh = repo.get_vehicle(conn, vehicle_id := _to_id(vehicle_id, "Vehicle"))
+        if not veh or veh["customer_id"] != customer_id:
+            raise ValidationError("Vehicle not found.")
+    mileage = _to_mileage(data.get("mileage"))
+    comments = _text(data.get("comments"), "Comments")
 
     no = data.get("no")
     existing = None
@@ -415,8 +376,8 @@ def list_history(conn: sqlite3.Connection, search: str | None = None) -> list[di
     rows = repo.list_invoices_by_status(conn, "completed")
     summaries = [_invoice_summary(conn, i) for i in rows]
 
-    if search:
-        q = search.strip().lower()
+    if search := _text(search, "Search"):
+        q = search.lower()
         summaries = [
             s for s in summaries
             if q in s["customer"].lower()
@@ -462,8 +423,8 @@ def duplicate_invoice(conn: sqlite3.Connection, no: int) -> dict:
         "items": items,
         "status": "open",
         "mechanic_id": src_mech["id"] if src_mech and src_mech["active"] else None,
-        "tax_rate": invoice_tax_rate(conn, src) * 100,   # rates go in as percentages
-        "cc_fee_rate": invoice_cc_fee_rate(conn, src) * 100,
+        "tax_rate": float(invoice_tax_rate(conn, src)),
+        "cc_fee_rate": float(invoice_cc_fee_rate(conn, src)),
     })
     return get_invoice(conn, saved["no"])
 

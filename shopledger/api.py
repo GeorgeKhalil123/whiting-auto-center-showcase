@@ -6,19 +6,31 @@ Every method returns a plain JSON-serializable value. Validation failures come b
 `{"ok": False, "error": "..."}` instead of throwing across the bridge; every
 write runs in a transaction so a failure rolls back cleanly.
 
-Money in returned payloads is already rounded to cents. Rates go in as
-percentages (6.625) and come back as fractions (0.06625) plus a "6.625%" label.
+Money in returned payloads is already rounded to cents. Rates go in and come
+out as fractions, the same as production: 0.06625 is 6.625% (labels such as
+"6.625%" are returned alongside for display).
 """
 from __future__ import annotations
 
 import sqlite3
 import threading
+from os import PathLike
 from pathlib import Path
 from typing import Any, Callable
 
 from . import db as db_module
 from . import printing, services
 from .services import ValidationError
+
+
+def _data(data: object) -> dict:
+    """The JSON object a write was sent. Anything else is a UI bug: report it
+    as a validation error rather than an AttributeError deep in services."""
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValidationError("Invalid data.")
+    return data
 
 
 class Api:
@@ -73,19 +85,19 @@ class Api:
         return self._read(lambda c: services.get_customer(c, id))
 
     def create_customer(self, data: dict) -> Any:
-        return self._write(lambda c: services.create_customer(c, data or {}))
+        return self._write(lambda c: services.create_customer(c, _data(data)))
 
     def update_customer(self, id: str, data: dict) -> Any:
-        return self._write(lambda c: services.update_customer(c, id, data or {}))
+        return self._write(lambda c: services.update_customer(c, id, _data(data)))
 
     def delete_customer(self, id: str) -> Any:
         return self._write(lambda c: services.delete_customer(c, id))
 
     def add_vehicle(self, customer_id: str, data: dict) -> Any:
-        return self._write(lambda c: services.add_vehicle(c, customer_id, data or {}))
+        return self._write(lambda c: services.add_vehicle(c, customer_id, _data(data)))
 
     def update_vehicle(self, id: str, data: dict) -> Any:
-        return self._write(lambda c: services.update_vehicle(c, id, data or {}))
+        return self._write(lambda c: services.update_vehicle(c, id, _data(data)))
 
     # ---- mechanics -----------------------------------------------------------
 
@@ -93,10 +105,10 @@ class Api:
         return self._read(lambda c: services.list_mechanics(c, include_inactive))
 
     def create_mechanic(self, data: dict) -> Any:
-        return self._write(lambda c: services.create_mechanic(c, data or {}))
+        return self._write(lambda c: services.create_mechanic(c, _data(data)))
 
     def update_mechanic(self, id: str, data: dict) -> Any:
-        return self._write(lambda c: services.update_mechanic(c, id, data or {}))
+        return self._write(lambda c: services.update_mechanic(c, id, _data(data)))
 
     def delete_mechanic(self, id: str) -> Any:
         return self._write(lambda c: services.delete_mechanic(c, id))
@@ -114,10 +126,10 @@ class Api:
         return self._read(lambda c: services.list_categories(c, type))
 
     def create_catalog_item(self, data: dict) -> Any:
-        return self._write(lambda c: services.create_catalog_item(c, data or {}))
+        return self._write(lambda c: services.create_catalog_item(c, _data(data)))
 
     def update_catalog_item(self, id: str, data: dict) -> Any:
-        return self._write(lambda c: services.update_catalog_item(c, id, data or {}))
+        return self._write(lambda c: services.update_catalog_item(c, id, _data(data)))
 
     def delete_catalog_item(self, id: str) -> Any:
         return self._write(lambda c: services.delete_catalog_item(c, id))
@@ -125,7 +137,7 @@ class Api:
     # ---- invoices ------------------------------------------------------------
 
     def save_invoice(self, data: dict) -> Any:
-        return self._write(lambda c: services.save_invoice(c, data or {}))
+        return self._write(lambda c: services.save_invoice(c, _data(data)))
 
     def get_invoice(self, no: int) -> Any:
         return self._read(lambda c: services.get_invoice(c, no))
@@ -143,11 +155,11 @@ class Api:
         return self._write(lambda c: services.delete_invoice(c, no))
 
     def set_default_tax_rate(self, rate: float, tax_labor: bool | None = None) -> Any:
-        """Change the shop-wide tax defaults. `rate` is a percentage: 6.625 means 6.625%."""
+        """Change the shop-wide tax defaults. `rate` is a fraction: 0.06625 is 6.625%."""
         return self._write(lambda c: services.set_default_tax_rate(c, rate, tax_labor))
 
     def set_default_cc_fee(self, rate: float, on: bool | None = None) -> Any:
-        """Change the shop-wide card-fee defaults. `rate` is a percentage: 3 means 3%."""
+        """Change the shop-wide card-fee defaults. `rate` is a fraction: 0.03 is 3%."""
         return self._write(lambda c: services.set_default_cc_fee(c, rate, on))
 
     def dashboard_summary(self) -> Any:
@@ -159,7 +171,16 @@ class Api:
         """Render the invoice to a PDF receipt and (by default) open it."""
         def run(conn: sqlite3.Connection) -> dict:
             invoice = services.get_invoice(conn, no)
-            path = printing.render(invoice, dest)
+            if dest is not None and not isinstance(dest, (str, PathLike)):
+                raise ValidationError("Receipt path must be a file path.")
+            try:
+                path = printing.render(invoice, dest or None)
+            except ValueError:   # e.g. a bare folder like "/" has no file name
+                raise ValidationError("Receipt path must be a file path.") from None
+            except OSError as exc:
+                where = exc.filename or dest or "the temp folder"
+                raise ValidationError(f"Can't write receipt to {where}: "
+                                      f"{exc.strerror or exc}") from None
             if open_file:
                 printing._open_file(path)
             return {"ok": True, "path": str(path)}

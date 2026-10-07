@@ -5,7 +5,7 @@ import sqlite3
 
 from . import repository as repo
 from .db import get_setting, set_setting
-from .rules import ValidationError
+from .rules import ValidationError, _given, _text, _to_id
 from .shaping import _mechanic_dict
 
 
@@ -32,7 +32,7 @@ def active_mechanic_id(conn: sqlite3.Connection) -> str | None:
 
 
 def set_active_mechanic(conn: sqlite3.Connection, mid: str) -> dict:
-    row = repo.get_mechanic(conn, mid)
+    row = repo.get_mechanic(conn, mid := _to_id(mid, "Mechanic"))
     if not row:
         raise ValidationError("Mechanic not found.")
     if not row["active"]:
@@ -42,14 +42,14 @@ def set_active_mechanic(conn: sqlite3.Connection, mid: str) -> dict:
 
 
 def create_mechanic(conn: sqlite3.Connection, data: dict) -> dict:
-    name = (data.get("name") or "").strip()
+    name = _text(data.get("name"), "Mechanic name")
     if not name:
         raise ValidationError("Mechanic name is required.")
     existing = repo.find_mechanic_by_name(conn, name)
     if existing and existing["active"]:
         raise ValidationError(f"“{name}” is already on the roster.")
-    role = (data.get("role") or "").strip()
-    phone = (data.get("phone") or "").strip()
+    role = _text(data.get("role"), "Role")
+    phone = _text(data.get("phone"), "Phone")
     if existing:  # same name, previously removed — bring them back
         repo.update_mechanic(conn, existing["id"], {"active": 1, "role": role, "phone": phone})
         mid = existing["id"]
@@ -61,12 +61,12 @@ def create_mechanic(conn: sqlite3.Connection, data: dict) -> dict:
 
 
 def update_mechanic(conn: sqlite3.Connection, mid: str, data: dict) -> dict:
-    row = repo.get_mechanic(conn, mid)
+    row = repo.get_mechanic(conn, mid := _to_id(mid, "Mechanic"))
     if not row:
         raise ValidationError("Mechanic not found.")
     fields: dict = {}
     if "name" in data:
-        name = (data["name"] or "").strip()
+        name = _text(data["name"], "Mechanic name")
         if not name:
             raise ValidationError("Mechanic name is required.")
         clash = repo.find_mechanic_by_name(conn, name)
@@ -74,9 +74,9 @@ def update_mechanic(conn: sqlite3.Connection, mid: str, data: dict) -> dict:
             raise ValidationError(f"“{name}” is already on the roster.")
         fields["name"] = name
     if "role" in data:
-        fields["role"] = (data["role"] or "").strip()
+        fields["role"] = _text(data["role"], "Role")
     if "phone" in data:
-        fields["phone"] = (data["phone"] or "").strip()
+        fields["phone"] = _text(data["phone"], "Phone")
     repo.update_mechanic(conn, mid, fields)
     if fields.get("name") and fields["name"] != row["name"]:
         repo.rename_invoice_mechanic(conn, mid, fields["name"])
@@ -90,7 +90,7 @@ def delete_mechanic(conn: sqlite3.Connection, mid: str) -> dict:
     (kept for history), otherwise it is deleted outright. The last remaining
     mechanic can't be removed — invoices need someone to be serviced by.
     """
-    row = repo.get_mechanic(conn, mid)
+    row = repo.get_mechanic(conn, mid := _to_id(mid, "Mechanic"))
     if not row:
         raise ValidationError("Mechanic not found.")
     roster = repo.list_mechanics(conn)
@@ -113,9 +113,9 @@ def _resolve_mechanic(conn: sqlite3.Connection, data: dict,
                       existing: sqlite3.Row | None) -> tuple[str | None, str]:
     """(mechanic_id, name) for a save: explicit pick, else the invoice's own,
     else the shop's active mechanic."""
-    mid = data.get("mechanic_id") or data.get("mechanicId")
-    if mid:
-        row = repo.get_mechanic(conn, mid)
+    mid = _given(data, "mechanic_id", "mechanicId")
+    if mid is not None:
+        row = repo.get_mechanic(conn, _to_id(mid, "Mechanic"))
         if not row:
             raise ValidationError("Mechanic not found.")
         return row["id"], row["name"]
