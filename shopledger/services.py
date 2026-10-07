@@ -22,7 +22,7 @@ from .rules import (DEFAULT_CC_FEE_RATE, DEFAULT_TAX_RATE, MAX_CC_FEE_RATE,  # n
                     format_tax_rate, invoice_cc_fee_rate, invoice_tax_rate,
                     normalize_cc_fee_rate, normalize_tax_rate, set_default_cc_fee,
                     set_default_tax_rate, tax_labor, tax_rate, today,
-                    _month_label, _require_type, _to_int, _to_price)
+                    _month_label, _require_type, _to_int, _to_invoice_no, _to_price, _to_qty)
 from .shaping import (_catalog_dict, _customer_dict, _invoice_summary,  # noqa: F401
                       _item_dict, _serviced_by, _vehicle_dict, vehicle_title)
 
@@ -265,9 +265,7 @@ def _normalize_items(raw: list[dict], labor_taxed: bool = False) -> list[dict]:
         type_ = it.get("type")
         if type_ not in ("labor", "part"):
             raise ValidationError("Line item type must be 'labor' or 'part'.")
-        qty = _to_int(it.get("qty")) or 0
-        if qty < 1:
-            qty = 1
+        qty = _to_qty(it.get("qty"))
         price = _to_price(it.get("price"))
         # taxed defaults to (type == 'part'), or to everything when the invoice
         # taxes labor too. A stored/explicit per-line flag always wins.
@@ -309,7 +307,7 @@ def save_invoice(conn: sqlite3.Connection, data: dict) -> dict:
         no = _next_invoice_no(conn)
         inv_date = today()
     else:
-        no = int(no)
+        no = _to_invoice_no(no)
         existing = repo.get_invoice(conn, no)
         inv_date = existing["date"] if existing else today()
 
@@ -376,7 +374,7 @@ def _resolve_tax_rate(conn: sqlite3.Connection, data: dict,
 
 
 def get_invoice(conn: sqlite3.Connection, no: int) -> dict:
-    inv = repo.get_invoice(conn, int(no))
+    inv = repo.get_invoice(conn, _to_invoice_no(no))
     if not inv:
         raise ValidationError("Invoice not found.")
     items = repo.get_invoice_items(conn, inv["no"])
@@ -431,20 +429,21 @@ def list_history(conn: sqlite3.Connection, search: str | None = None) -> list[di
     for s in summaries:
         key = (s["date"] or "")[:7]  # YYYY-MM
         g = groups.setdefault(key, {"month": key, "label": _month_label(key),
-                                    "invoices": [], "count": 0, "total": 0.0})
+                                    "invoices": [], "count": 0, "total": Decimal(0)})
         g["invoices"].append(s)
         g["count"] += 1
-        g["total"] = round(g["total"] + s["total"], 2)
+        g["total"] += money.dec(s["total"])
 
     ordered = sorted(groups.values(), key=lambda g: g["month"], reverse=True)
     for g in ordered:
+        g["total"] = money.to_number(g["total"])
         g["invoices"].sort(key=lambda s: (s["date"] or "", s["no"]), reverse=True)
     return ordered
 
 
 def duplicate_invoice(conn: sqlite3.Connection, no: int) -> dict:
     """Create a fresh open draft copying customer/vehicle/mileage/items."""
-    src = repo.get_invoice(conn, int(no))
+    src = repo.get_invoice(conn, _to_invoice_no(no))
     if not src:
         raise ValidationError("Invoice not found.")
     items = [
@@ -463,8 +462,8 @@ def duplicate_invoice(conn: sqlite3.Connection, no: int) -> dict:
         "items": items,
         "status": "open",
         "mechanic_id": src_mech["id"] if src_mech and src_mech["active"] else None,
-        "tax_rate": float(invoice_tax_rate(conn, src)),
-        "cc_fee_rate": float(invoice_cc_fee_rate(conn, src)),
+        "tax_rate": invoice_tax_rate(conn, src) * 100,   # rates go in as percentages
+        "cc_fee_rate": invoice_cc_fee_rate(conn, src) * 100,
     })
     return get_invoice(conn, saved["no"])
 
@@ -474,20 +473,20 @@ def delete_invoice(conn: sqlite3.Connection, no: int) -> dict:
 
     Guarding on status protects finished invoice history from accidental loss.
     """
-    inv = repo.get_invoice(conn, int(no))
+    inv = repo.get_invoice(conn, _to_invoice_no(no))
     if not inv:
         raise ValidationError("Invoice not found.")
     if inv["status"] != "open":
         raise ValidationError("Only open invoices can be deleted.")
-    repo.delete_invoice(conn, int(no))
-    return {"ok": True, "no": int(no)}
+    repo.delete_invoice(conn, inv["no"])
+    return {"ok": True, "no": inv["no"]}
 
 
 def dashboard_summary(conn: sqlite3.Connection) -> dict:
     today_str = today()
     completed = [_invoice_summary(conn, i) for i in repo.list_invoices_by_status(conn, "completed")]
     todays = [s for s in completed if s["date"] == today_str]
-    revenue_today = round(sum(s["total"] for s in todays), 2)
+    revenue_today = money.to_number(sum((money.dec(s["total"]) for s in todays), Decimal(0)))
     recent = sorted(completed, key=lambda s: s["no"], reverse=True)[:5]
     open_list = list_open_invoices(conn)
     return {

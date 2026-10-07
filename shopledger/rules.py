@@ -75,15 +75,20 @@ def invoice_tax_rate(conn: sqlite3.Connection, inv: sqlite3.Row) -> Decimal:
 
 
 def _normalize_rate(value: object, what: str, max_rate: Decimal, example: str) -> Decimal:
-    """Coerce a UI rate into a fraction. Accepts 0.06625 or 6.625."""
+    """Coerce a rate typed as a percentage into a fraction: 6.625 -> 0.06625.
+
+    Rates always come in as percentages, the way the shop types them, so 1
+    means 1% and 0.5 means half a percent. They go back out as fractions.
+    """
     try:
         rate = money.dec(value if value not in (None, "") else 0)
     except Exception:
+        raise ValidationError(f"{what} must be a number.") from None
+    if not rate.is_finite():
         raise ValidationError(f"{what} must be a number.")
     if rate < 0:
         raise ValidationError(f"{what} cannot be negative.")
-    if rate > 1:  # sent as a percentage (6.625) rather than a fraction
-        rate = rate / 100
+    rate = rate / 100
     if rate > max_rate:
         raise ValidationError(f"{what} looks too high — enter a percentage like {example}.")
     # Keep more places than money: 6.625% is 0.06625.
@@ -163,7 +168,39 @@ def _to_price(value: object) -> float:
     try:
         d = money.dec(value if value not in (None, "") else 0)
     except Exception:
+        raise ValidationError("Price must be a number.") from None
+    if not d.is_finite():
         raise ValidationError("Price must be a number.")
     if d < 0:
         raise ValidationError("Price cannot be negative.")
     return float(money.money(d))
+
+
+MAX_QTY = 9999  # a typo guard, like the rate caps
+
+
+def _to_qty(value: object) -> int:
+    """A line's quantity: a whole number from 1 up. Missing means 1.
+
+    Never rounds or clamps — billing 1.5 hours as 1 would undercharge silently.
+    """
+    if value is None or value == "":
+        return 1
+    try:
+        d = money.dec(str(value).strip().replace(",", ""))
+    except Exception:
+        d = None
+    if isinstance(value, bool) or d is None or not d.is_finite() \
+            or d != d.to_integral_value() or d < 1:
+        raise ValidationError("Quantity must be a whole number of at least 1.")
+    if d > MAX_QTY:
+        raise ValidationError(f"Quantity looks too high — enter at most {MAX_QTY}.")
+    return int(d)
+
+
+def _to_invoice_no(value: object) -> int:
+    """An invoice number from the UI; anything non-numeric can't be one."""
+    no = _to_int(value)
+    if no is None or isinstance(value, bool) or not 0 < no < 2**63:
+        raise ValidationError("Invoice number must be a whole number.")
+    return no

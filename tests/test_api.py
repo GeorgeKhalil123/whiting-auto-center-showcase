@@ -5,9 +5,12 @@ New for the showcase — the production suite exercises services directly.
 from __future__ import annotations
 
 import threading
+from pathlib import Path
+
+import pytest
 
 from shopledger import db as db_module
-from shopledger import printing, services
+from shopledger import demo, printing, services
 from shopledger.api import Api
 
 
@@ -94,16 +97,66 @@ def test_print_invoice_writes_a_pdf(tmp_path, conn):
     no = api.save_invoice({"customer_id": cid, "cc_fee_rate": 3, "items": [
         {"name": "Brake Pad Set", "qty": 1, "price": 70, "type": "part"}]})["no"]
     res = api.print_invoice(no, dest=str(tmp_path / "receipt.pdf"), open_file=False)
-    data = (tmp_path / "receipt.pdf").read_bytes()
-    assert res["ok"] and data.startswith(b"%PDF")
+    assert res["ok"], res
+    path = Path(res["path"])
+    assert path.suffix == ".pdf", f"fell back to {path.name} — is reportlab installed?"
+    assert path.read_bytes().startswith(b"%PDF")
     assert printing.SHOP_NAME == "SAMPLE AUTO REPAIR"
 
 
 def test_html_fallback_renders_the_same_totals(tmp_path, conn):
     api = Api(conn)
     cid = _new_customer(api)
-    no = api.save_invoice({"customer_id": cid, "items": [
+    veh = api.add_vehicle(cid, {"make": "Honda", "model": "Civic", "plate": "DEMO-01"})
+    api.update_customer(cid, {"phone": "555-0100"})
+    no = api.save_invoice({"customer_id": cid, "vehicle_id": veh["id"], "items": [
         {"name": "Brake Pad Set", "qty": 1, "price": 100, "type": "part"}]})["no"]
     path = printing._render_html(api.get_invoice(no), tmp_path / "receipt")
     text = path.read_text(encoding="utf-8")
     assert "Tax (6.625%)" in text and "$106.63" in text
+    # the same details grid as the PDF, phone and plate included
+    assert "555-0100" in text and "DEMO-01" in text
+
+
+def test_missing_reportlab_falls_back_loudly(tmp_path, conn, monkeypatch):
+    def no_reportlab(*_a, **_k):
+        raise ImportError("No module named 'reportlab'")
+    monkeypatch.setattr(printing, "_render_pdf", no_reportlab)
+    api = Api(conn)
+    no = api.save_invoice({"customer_id": _new_customer(api), "items": [
+        {"name": "Brake Pad Set", "qty": 1, "price": 100, "type": "part"}]})["no"]
+    with pytest.warns(RuntimeWarning, match="HTML receipt instead"):
+        path = printing.render(api.get_invoice(no), tmp_path / "receipt.pdf")
+    assert path.suffix == ".html" and path.exists()
+
+
+@pytest.mark.parametrize("call", ["get_invoice", "duplicate_invoice", "delete_invoice",
+                                  "print_invoice"])
+def test_bad_invoice_number_is_a_clean_error(conn, call):
+    assert getattr(Api(conn), call)("abc") == {
+        "ok": False, "error": "Invoice number must be a whole number."}
+
+
+def test_bad_numbers_never_surface_as_unexpected_errors(conn):
+    api = Api(conn)
+    cid = _new_customer(api)
+    results = [api.set_default_cc_fee("NaN"), api.set_default_tax_rate("Infinity")]
+    for price, qty in (("NaN", 1), ("Infinity", 1), (80, 1.5), (1, 10**30)):
+        results.append(api.save_invoice({"customer_id": cid, "items": [
+            {"name": "Labor", "qty": qty, "price": price, "type": "labor"}]}))
+    assert all(r["ok"] is False and "Unexpected" not in r["error"] for r in results), results
+
+
+def test_demo_creates_a_missing_output_folder(tmp_path, capsys):
+    out = tmp_path / "out" / "nested" / "x.pdf"
+    assert demo.main(["--out", str(out)]) == 0
+    assert out.read_bytes().startswith(b"%PDF")
+    assert "backup" in capsys.readouterr().out
+
+
+def test_demo_reports_an_unwritable_output_and_still_finishes(tmp_path, capsys):
+    blocker = tmp_path / "file"
+    blocker.write_text("not a folder")
+    assert demo.main(["--out", str(blocker / "x.pdf")]) == 1
+    printed = capsys.readouterr().out
+    assert "receipt       FAILED:" in printed and "backup" in printed

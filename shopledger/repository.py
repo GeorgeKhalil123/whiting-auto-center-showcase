@@ -14,6 +14,14 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}{uuid.uuid4().hex[:12]}"
 
 
+def _like(search: str) -> str:
+    """A LIKE pattern matching `search` literally — % and _ are not wildcards."""
+    text = search.strip().lower()
+    for ch in ("\\", "%", "_"):
+        text = text.replace(ch, "\\" + ch)
+    return f"%{text}%"
+
+
 # ---- customers ---------------------------------------------------------------
 
 def list_customers(conn: sqlite3.Connection, search: str | None = None,
@@ -21,8 +29,8 @@ def list_customers(conn: sqlite3.Connection, search: str | None = None,
     where = [] if include_archived else ["archived = 0"]
     params: list[Any] = []
     if search:
-        like = f"%{search.strip().lower()}%"
-        where.append("(lower(name) LIKE ? OR lower(COALESCE(phone,'')) LIKE ?)")
+        like = _like(search)
+        where.append("(lower(name) LIKE ? ESCAPE '\\' OR lower(COALESCE(phone,'')) LIKE ? ESCAPE '\\')")
         params += [like, like]
     clause = (" WHERE " + " AND ".join(where)) if where else ""
     return conn.execute(
@@ -97,8 +105,9 @@ def list_catalog(
         sql += " AND category = ?"
         params.append(category)
     if search:
-        like = f"%{search.strip().lower()}%"
-        sql += " AND (lower(name) LIKE ? OR lower(COALESCE(desc,'')) LIKE ? OR lower(COALESCE(category,'')) LIKE ?)"
+        like = _like(search)
+        sql += (" AND (lower(name) LIKE ? ESCAPE '\\' OR lower(COALESCE(desc,'')) LIKE ? ESCAPE '\\'"
+                " OR lower(COALESCE(category,'')) LIKE ? ESCAPE '\\')")
         params += [like, like, like]
     sql += " ORDER BY name COLLATE NOCASE"
     return conn.execute(sql, params).fetchall()

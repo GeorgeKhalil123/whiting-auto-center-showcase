@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -70,7 +71,10 @@ def render(invoice: dict, dest: Path | str | None = None) -> Path:
     """
     try:
         return _render_pdf(invoice, dest)
-    except ImportError:
+    except ImportError as exc:
+        # Still print, but say so: a caller asking for a PDF gets an .html.
+        warnings.warn(f"PDF printing unavailable ({exc}); wrote an HTML receipt instead.",
+                      RuntimeWarning, stacklevel=2)
         return _render_html(invoice, dest)
 
 
@@ -247,8 +251,10 @@ def _render_html(invoice: dict, dest: Path | str | None = None) -> Path:
    <tr><td><b>Invoice</b> #{invoice['no']}</td><td><b>Date</b> {html.escape(invoice.get('date',''))}</td>
        <td><b>Serviced by</b> {html.escape(invoice.get('servicedBy') or '—')}</td></tr>
    <tr><td><b>Customer</b> {html.escape(invoice.get('customer','—'))}</td>
-       <td><b>Vehicle</b> {html.escape(invoice.get('vehicle','—'))}</td>
+       <td><b>Phone</b> {html.escape(invoice.get('phone') or '—')}</td>
        <td><b>Mileage</b> {mileage if mileage is not None else '—'}</td></tr>
+   <tr><td><b>Vehicle</b> {html.escape(invoice.get('vehicle','—'))}</td>
+       <td><b>Plate</b> {html.escape(invoice.get('plate') or '—')}</td><td></td></tr>
  </table>
  <table><thead><tr><th>WORK</th><th>QTY</th><th>TAX</th><th>AMOUNT</th></tr></thead>
  <tbody>{rows}</tbody></table>

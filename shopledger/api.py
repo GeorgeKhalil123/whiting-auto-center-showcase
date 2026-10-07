@@ -6,7 +6,8 @@ Every method returns a plain JSON-serializable value. Validation failures come b
 `{"ok": False, "error": "..."}` instead of throwing across the bridge; every
 write runs in a transaction so a failure rolls back cleanly.
 
-Money in returned payloads is already rounded to cents.
+Money in returned payloads is already rounded to cents. Rates go in as
+percentages (6.625) and come back as fractions (0.06625) plus a "6.625%" label.
 """
 from __future__ import annotations
 
@@ -142,11 +143,11 @@ class Api:
         return self._write(lambda c: services.delete_invoice(c, no))
 
     def set_default_tax_rate(self, rate: float, tax_labor: bool | None = None) -> Any:
-        """Change the shop-wide tax defaults. Saved invoices keep their own."""
+        """Change the shop-wide tax defaults. `rate` is a percentage: 6.625 means 6.625%."""
         return self._write(lambda c: services.set_default_tax_rate(c, rate, tax_labor))
 
     def set_default_cc_fee(self, rate: float, on: bool | None = None) -> Any:
-        """Change the shop-wide card-fee defaults. Saved invoices keep their own."""
+        """Change the shop-wide card-fee defaults. `rate` is a percentage: 3 means 3%."""
         return self._write(lambda c: services.set_default_cc_fee(c, rate, on))
 
     def dashboard_summary(self) -> Any:

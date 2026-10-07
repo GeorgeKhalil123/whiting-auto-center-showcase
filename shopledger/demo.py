@@ -88,13 +88,20 @@ def main(argv: list[str] | None = None) -> int:
               f"{'tax (' + inv['taxRateLabel'] + ')':<16} ${inv['tax']:.2f}  "
               f"card fee ${inv['ccFee']:.2f}  total ${inv['total']:.2f}")
 
-        printed = api.print_invoice(saved["no"], dest=str(Path(args.out).resolve()),
-                                    open_file=False)
-        print(f"receipt       {printed['path']}")
+        out = Path(args.out).resolve()
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass  # print_invoice reports the unwritable path below
+        printed = api.print_invoice(saved["no"], dest=str(out), open_file=False)
+        if printed.get("ok"):
+            print(f"receipt       {printed['path']}")
+        else:
+            print(f"receipt       FAILED: {printed.get('error')}")
         backed = api.backup_now()
         print(f"backup        {Path(backed['path']).name}")
         api.close()
-        return 0 if before == after else 1
+        return 0 if before == after and printed.get("ok") else 1
 
 
 if __name__ == "__main__":

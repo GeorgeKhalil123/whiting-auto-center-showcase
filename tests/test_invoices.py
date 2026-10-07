@@ -146,10 +146,14 @@ def test_save_requires_customer_and_items(conn):
                                      "status": "open"})
 
 
-def test_qty_minimum_one(conn):
-    no = an_invoice(conn, status="open",
-                    items=[{"name": "x", "qty": 0, "price": 10, "type": "labor"}])
-    assert services.get_invoice(conn, no)["items"][0]["qty"] == 1
+def test_qty_must_be_a_whole_number_of_at_least_one(conn):
+    # Production clamped 0 up to 1 (and truncated 1.5 to 1); the showcase
+    # rejects both instead of billing a quantity nobody typed.
+    with pytest.raises(services.ValidationError, match="whole number of at least 1"):
+        an_invoice(conn, status="open",
+                   items=[{"name": "x", "qty": 0, "price": 10, "type": "labor"}])
+    no = an_invoice(conn, status="open", items=[{"name": "x", "price": 10, "type": "labor"}])
+    assert services.get_invoice(conn, no)["items"][0]["qty"] == 1     # missing -> 1
 
 
 def test_history_excludes_open(conn):
@@ -203,3 +207,54 @@ def test_readding_a_line_on_a_resumed_invoice_bumps_qty(conn):
     services.add_line(lines, {"name": "Brake Pad Set", "price": 70, "type": "labor"})
     assert [(it["name"], it["type"], it["qty"]) for it in lines] == [
         ("Brake Pad Set", "part", 2), ("Brake Pad Set", "labor", 1)]
+
+
+@pytest.mark.parametrize("qty", [1.5, "2.5", 0, "0", -3, "-3", "abc", "NaN", "Infinity",
+                                 True, 10**30, 10_000])
+def test_bad_quantities_are_rejected_not_rounded(conn, qty):
+    # 1.5 h of labor at $80 used to save as qty 1 / $80; 10**30 crashed SQLite.
+    cid, _ = customer_with_vehicle(conn)
+    with pytest.raises(services.ValidationError, match="Quantity"):
+        services.save_invoice(conn, {"customer_id": cid, "items": [
+            {"name": "Labor", "qty": qty, "price": 80, "type": "labor"}]})
+
+
+@pytest.mark.parametrize("qty, expected", [(2, 2), ("2", 2), (2.0, 2), ("1,000", 1000), (9999, 9999)])
+def test_whole_number_quantities_are_accepted(conn, qty, expected):
+    no = an_invoice(conn, items=[{"name": "Part", "qty": qty, "price": 1, "type": "part"}])
+    assert services.get_invoice(conn, no)["items"][0]["qty"] == expected
+
+
+@pytest.mark.parametrize("price", ["NaN", "Infinity", "-Infinity", "sNaN"])
+def test_non_finite_prices_are_a_validation_error(price):
+    with pytest.raises(services.ValidationError, match="Price must be a number"):
+        services._to_price(price)
+
+
+@pytest.mark.parametrize("call", [services.get_invoice, services.duplicate_invoice,
+                                  services.delete_invoice])
+@pytest.mark.parametrize("no", ["abc", "", None, "1.5", True, 10**30])
+def test_non_numeric_invoice_numbers_are_a_validation_error(conn, call, no):
+    with pytest.raises(services.ValidationError, match="Invoice number"):
+        call(conn, no)
+
+
+def test_search_treats_percent_and_underscore_literally(conn):
+    services.create_customer(conn, {"name": "Jane Sample"})
+    services.create_customer(conn, {"name": "100% Auto_Parts"})
+    assert [c["name"] for c in services.list_customers(conn, "%")] == ["100% Auto_Parts"]
+    assert [c["name"] for c in services.list_customers(conn, "_")] == ["100% Auto_Parts"]
+    assert len(services.list_customers(conn, "sample")) == 1
+    assert services.list_catalog(conn, "part", search="%") == []
+    assert services.list_catalog(conn, "part", search="_") == []
+
+
+def test_money_totals_are_summed_as_decimal(conn):
+    # 0.1 + 0.2 + 0.7 as floats is 0.9999999999999999; as Decimal it is 1.00.
+    for price, name in ((0.1, "A Sample"), (0.2, "B Sample"), (0.7, "C Sample")):
+        an_invoice(conn, name=name, tax_rate=0,
+                   items=[{"name": "Part", "qty": 1, "price": price, "type": "part"}])
+    month = services.list_history(conn)[0]
+    assert month["total"] == 1.0 and isinstance(month["total"], float)
+    revenue = services.dashboard_summary(conn)["revenue_today"]
+    assert revenue == 1.0 and isinstance(revenue, float)
