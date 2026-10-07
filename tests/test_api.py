@@ -197,3 +197,26 @@ def test_demo_says_when_it_changes_the_extension(tmp_path, capsys):
     assert demo.main(["--out", str(tmp_path / "x.txt")]) == 0
     assert (tmp_path / "x.pdf").exists() and not (tmp_path / "x.txt").exists()
     assert "receipts are PDFs; writing x.pdf" in capsys.readouterr().out
+
+
+def test_demo_writes_into_an_existing_folder(tmp_path, capsys):
+    # "--out ../out" used to write a sibling ../out.pdf next to the folder.
+    folder = tmp_path / "out"
+    folder.mkdir()
+    assert demo.main(["--out", str(folder)]) == 0
+    assert (folder / "sample_invoice.pdf").read_bytes().startswith(b"%PDF")
+    assert not (tmp_path / "out.pdf").exists()
+
+
+def test_demo_out_root_never_tracebacks(capsys, monkeypatch):
+    # "--out /" raised ValueError from with_suffix on an empty name. Stub the
+    # write so the test never touches the real filesystem root.
+    seen = {}
+
+    def fake_print(self, no, dest=None, open_file=True):
+        seen["dest"] = dest
+        return {"ok": True, "path": dest}
+    monkeypatch.setattr(Api, "print_invoice", fake_print)
+    assert demo.main(["--out", "/"]) == 0
+    assert Path(seen["dest"]) == Path("/").resolve() / "sample_invoice.pdf"
+    assert "backup" in capsys.readouterr().out

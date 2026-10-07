@@ -210,7 +210,8 @@ def test_readding_a_line_on_a_resumed_invoice_bumps_qty(conn):
 
 
 @pytest.mark.parametrize("qty", [1.5, "2.5", 0, "0", -3, "-3", "abc", "NaN", "Infinity",
-                                 True, 10**30, 10_000, "1e3", "+5", "1_000", "١٢", "３", []])
+                                 True, 10**30, 10_000, "1e3", "+5", "1_000", "١٢", "３", [],
+                                 ",,1,,", "1,0,0", "1,00", ",100", "100,"])
 def test_bad_quantities_are_rejected_not_rounded(conn, qty):
     # 1.5 h of labor at $80 used to save as qty 1 / $80; 10**30 crashed SQLite.
     cid, _ = customer_with_vehicle(conn)
@@ -219,7 +220,8 @@ def test_bad_quantities_are_rejected_not_rounded(conn, qty):
             {"name": "Labor", "qty": qty, "price": 80, "type": "labor"}]})
 
 
-@pytest.mark.parametrize("qty, expected", [(2, 2), ("2", 2), (2.0, 2), ("1,000", 1000), (9999, 9999)])
+@pytest.mark.parametrize("qty, expected", [(2, 2), ("2", 2), (2.0, 2), ("1,000", 1000),
+                                           ("9,999", 9999), ("2.0", 2), (9999, 9999)])
 def test_whole_number_quantities_are_accepted(conn, qty, expected):
     no = an_invoice(conn, items=[{"name": "Part", "qty": qty, "price": 1, "type": "part"}])
     assert services.get_invoice(conn, no)["items"][0]["qty"] == expected
@@ -332,3 +334,25 @@ def test_numbers_are_accepted_as_text_but_lists_are_not(conn):
 def test_malformed_line_items_are_rejected(conn, items, msg):
     with pytest.raises(services.ValidationError, match=msg):
         an_invoice(conn, items=items)
+
+
+@pytest.mark.parametrize("year", [10**30, "abc", 1899, -1, 1.5, True])
+def test_bad_vehicle_years_are_rejected_not_replaced(conn, year):
+    # These used to be swapped for the current year without a word.
+    cid, vid = customer_with_vehicle(conn)
+    with pytest.raises(services.ValidationError, match="Year must be between 1900"):
+        services.add_vehicle(conn, cid, {"make": "A", "model": "B", "year": year})
+    with pytest.raises(services.ValidationError, match="Year must be between 1900"):
+        services.update_vehicle(conn, vid, {"year": year})
+
+
+def test_vehicle_year_range_and_blank_default(conn):
+    from datetime import date
+    cid, _ = customer_with_vehicle(conn)
+    nxt = date.today().year + 1
+    assert services.add_vehicle(conn, cid, {"make": "A", "model": "B", "year": nxt})["year"] == nxt
+    assert services.add_vehicle(conn, cid, {"make": "A", "model": "B", "year": "1900"})["year"] == 1900
+    blank = services.add_vehicle(conn, cid, {"make": "A", "model": "B", "year": ""})
+    assert blank["year"] == date.today().year
+    with pytest.raises(services.ValidationError):
+        services.add_vehicle(conn, cid, {"make": "A", "model": "B", "year": nxt + 1})

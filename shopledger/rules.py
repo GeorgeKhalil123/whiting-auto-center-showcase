@@ -104,7 +104,7 @@ def _normalize_rate(value: object, what: str, max_rate: Decimal, example: str) -
     snapped = rate.quantize(RATE_PLACES)
     if abs(rate - snapped) > Decimal("1e-12"):
         raise ValidationError(f"{what} has more than 6 decimal places.")
-    return snapped
+    return snapped.copy_abs() if snapped.is_zero() else snapped   # "-0" -> 0, not "-0%"
 
 
 def normalize_tax_rate(value: object) -> Decimal:
@@ -128,7 +128,7 @@ def set_default_tax_rate(conn: sqlite3.Connection, value: object,
     rate = normalize_tax_rate(value)
     set_setting(conn, "tax_rate", str(rate))
     if labor is not None:
-        set_setting(conn, "tax_labor", "1" if labor else "0")
+        set_setting(conn, "tax_labor", "1" if _to_bool(labor, "Tax labor") else "0")
     return {"ok": True, "tax": float(rate), "taxLabor": tax_labor(conn)}
 
 
@@ -138,7 +138,7 @@ def set_default_cc_fee(conn: sqlite3.Connection, value: object,
     rate = normalize_cc_fee_rate(value)
     set_setting(conn, "cc_fee_rate", str(rate))
     if on is not None:
-        set_setting(conn, "cc_fee_on", "1" if on else "0")
+        set_setting(conn, "cc_fee_on", "1" if _to_bool(on, "Card fee on") else "0")
     return {"ok": True, "ccFeeRate": float(rate), "ccFeeOn": cc_fee_on(conn)}
 
 
@@ -193,13 +193,13 @@ def _to_price(value: object) -> float:
 
 def _whole_number(value: object) -> int | None:
     """'1,000' / 1000 / 1000.0 -> 1000. None for anything else: no 1.5, no
-    1e3, no signs, no non-ASCII digits, no bools."""
+    1e3, no signs, no non-ASCII digits, no bools, no stray commas (1,0,0)."""
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal, str)):
         return None
-    text = str(value).strip().replace(",", "")
-    if not re.fullmatch(r"[0-9]+(\.0*)?", text):
+    text = str(value).strip()
+    if not re.fullmatch(r"(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.0*)?", text):
         return None
-    return int(text.split(".")[0])
+    return int(text.split(".")[0].replace(",", ""))
 
 
 def _to_qty(value: object) -> int:
@@ -215,6 +215,27 @@ def _to_qty(value: object) -> int:
     if qty > MAX_QTY:
         raise ValidationError(f"Quantity looks too high — enter at most {MAX_QTY}.")
     return qty
+
+
+def _to_year(value: object) -> int | None:
+    """A model year: blank, or 1900 through next year's models."""
+    if value is None or value == "":
+        return None
+    year, latest = _whole_number(value), date.today().year + 1
+    if year is None or not 1900 <= year <= latest:
+        raise ValidationError(f"Year must be between 1900 and {latest}.")
+    return year
+
+
+def _to_bool(value: object, what: str) -> bool:
+    """A yes/no flag. bool("false") is True, so strings are parsed, not cast."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str) and value.strip().lower() in ("true", "false", "1", "0"):
+        return value.strip().lower() in ("true", "1")
+    raise ValidationError(f"{what} must be true or false.")
 
 
 def _to_mileage(value: object) -> int | None:

@@ -24,7 +24,8 @@ from .rules import (DEFAULT_CC_FEE_RATE, DEFAULT_TAX_RATE, MAX_CC_FEE_RATE,  # n
                     normalize_cc_fee_rate, normalize_tax_rate, set_default_cc_fee,
                     set_default_tax_rate, tax_labor, tax_rate, today,
                     _given, _month_label, _require_type, _text, _to_id, _to_int,
-                    _to_invoice_no, _to_mileage, _to_price, _to_qty)
+                    _to_bool, _to_invoice_no, _to_mileage, _to_price, _to_qty,
+                    _to_year)
 from .catalog import (create_catalog_item, delete_catalog_item,  # noqa: F401
                       list_catalog, list_categories, update_catalog_item)
 from .shaping import (_catalog_dict, _customer_dict, _invoice_summary,  # noqa: F401
@@ -169,7 +170,7 @@ def add_vehicle(conn: sqlite3.Connection, customer_id: str, data: dict) -> dict:
     if not make or not model:
         raise ValidationError("Vehicle make and model are required.")
     f = {
-        "year": _to_int(data.get("year")) or date.today().year,
+        "year": _to_year(data.get("year")) or date.today().year,
         "make": make,
         "model": model,
         "plate": _text(data.get("plate"), "Plate") or "—",
@@ -188,7 +189,7 @@ def update_vehicle(conn: sqlite3.Connection, vid: str, data: dict) -> dict:
         if key in data:
             fields[key] = _text(data[key], key) or ("—" if key in ("plate", "vin") else "")
     if "year" in data:
-        fields["year"] = _to_int(data.get("year"))
+        fields["year"] = _to_year(data.get("year"))
     if "mileage" in data:
         fields["mileage"] = _to_mileage(data.get("mileage"))
     repo.update_vehicle(conn, vid, fields)
@@ -228,7 +229,7 @@ def _normalize_items(raw: list[dict], labor_taxed: bool = False) -> list[dict]:
         # taxes labor too. A stored/explicit per-line flag always wins.
         taxed = it.get("taxed")
         default_taxed = type_ == "part" or labor_taxed
-        taxed_flag = default_taxed if taxed is None else (1 if taxed else 0)
+        taxed_flag = default_taxed if taxed is None else _to_bool(taxed, "Taxed")
         items.append({
             "name": name, "qty": qty, "price": price, "type": type_,
             "taxed": 1 if taxed_flag else 0,
@@ -245,7 +246,7 @@ def save_invoice(conn: sqlite3.Connection, data: dict) -> dict:
         raise ValidationError("Customer not found.")
 
     raw_labor = data.get("tax_labor", data.get("taxLabor"))
-    labor_taxed = tax_labor(conn) if raw_labor is None else bool(raw_labor)
+    labor_taxed = tax_labor(conn) if raw_labor is None else _to_bool(raw_labor, "Tax labor")
     items = _normalize_items(data.get("items") or [], labor_taxed)
     if not items:
         raise ValidationError("Add at least one item before saving.")
@@ -281,7 +282,7 @@ def save_invoice(conn: sqlite3.Connection, data: dict) -> dict:
                                float(rate), float(fee))
     repo.replace_invoice_items(conn, no, items)
 
-    if data.get("save_tax_default") or data.get("saveTaxDefault"):
+    if _to_bool(_given(data, "save_tax_default", "saveTaxDefault") or False, "Save as default"):
         set_setting(conn, "tax_rate", str(rate))
         set_setting(conn, "tax_labor", "1" if labor_taxed else "0")
 

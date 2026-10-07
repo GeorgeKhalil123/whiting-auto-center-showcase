@@ -89,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
               f"card fee ${inv['ccFee']:.2f}  total ${inv['total']:.2f}")
 
         out = Path(args.out).resolve()
+        if out.is_dir() or not out.name:   # "--out ../out" or "--out /"
+            out = out / "sample_invoice.pdf"
         if out.suffix.lower() != ".pdf":
             out = out.with_suffix(".pdf")
             print(f"note          receipts are PDFs; writing {out.name}")

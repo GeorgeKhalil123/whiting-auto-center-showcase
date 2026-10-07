@@ -218,3 +218,40 @@ def test_bootstrap_defaults_round_trip_through_the_setters(conn):
     keys = ("tax", "taxLabor", "ccFeeRate", "ccFeeOn")
     assert {k: after[k] for k in keys} == {k: before[k] for k in keys} == {
         "tax": 0.07, "taxLabor": True, "ccFeeRate": 0.035, "ccFeeOn": True}
+
+
+@pytest.mark.parametrize("zero", ["-0", -0.0, "-0.000"])
+def test_negative_zero_rate_is_plain_zero(conn, zero):
+    assert str(services.normalize_tax_rate(zero)) == "0.000000"
+    inv = services.get_invoice(conn, an_invoice(conn, items=PART, tax_rate=zero, cc_fee_rate=zero))
+    assert inv["taxRateLabel"] == "0%" and inv["ccFeeRateLabel"] == "0%"
+
+
+@pytest.mark.parametrize("flag, taxed", [(True, True), (False, False), ("true", True),
+                                         ("false", False), ("False", False), (1, True),
+                                         (0, False), ("1", True), ("0", False)])
+def test_tax_labor_flag_is_parsed_strictly(conn, flag, taxed):
+    # bool("false") is True: production taxed labor when the UI sent "false".
+    inv = services.get_invoice(conn, an_invoice(conn, items=MIXED, tax_labor=flag))
+    assert inv["items"][0]["taxed"] is taxed
+    services.set_default_tax_rate(conn, 0.07, flag)
+    assert services.tax_labor(conn) is taxed
+    services.set_default_cc_fee(conn, 0.03, flag)
+    assert services.cc_fee_on(conn) is taxed
+
+
+@pytest.mark.parametrize("flag", ["yes", "no", 2, 0.5, [], {}, "off"])
+def test_ambiguous_flags_are_rejected(conn, flag):
+    with pytest.raises(services.ValidationError, match="must be true or false"):
+        an_invoice(conn, items=MIXED, tax_labor=flag)
+    with pytest.raises(services.ValidationError, match="must be true or false"):
+        services.set_default_tax_rate(conn, 0.07, flag)
+    with pytest.raises(services.ValidationError, match="must be true or false"):
+        an_invoice(conn, items=[{**MIXED[0], "taxed": flag}])
+
+
+def test_line_taxed_and_save_default_flags_accept_strings(conn):
+    inv = services.get_invoice(conn, an_invoice(conn, items=[{**MIXED[1], "taxed": "false"}],
+                                                tax_rate=0.08, save_tax_default="false"))
+    assert inv["items"][0]["taxed"] is False
+    assert services.tax_rate(conn) == Decimal("0.06625")    # "false" did not save it
